@@ -13,6 +13,7 @@ use crate::bluetooth_screen::{BluetoothScreen, Summary as BluetoothSummary};
 use crate::label_screen::LabelsScreen;
 use crate::nav::Dir;
 use crate::screens::clock::clock_screen;
+use crate::sleep::sleep_step;
 use crate::wifi_screen::{Summary, WifiScreen};
 
 impl App {
@@ -32,6 +33,7 @@ impl App {
             SettingsRow::ColourCorrection => Some(QuickValue::flag(self.state.colour_correction)),
             SettingsRow::LcdGhosting => Some(QuickValue::flag(self.state.lcd_ghosting)),
             SettingsRow::Rumble => Some(QuickValue::flag(self.state.rumble)),
+            SettingsRow::Sleep => QuickValue::sleep(self.state.sleep_minutes),
             SettingsRow::Labels
             | SettingsRow::DateTime
             | SettingsRow::Network
@@ -133,7 +135,8 @@ impl App {
             | SettingsRow::FastForwardSound
             | SettingsRow::ColourCorrection
             | SettingsRow::LcdGhosting
-            | SettingsRow::Rumble => return,
+            | SettingsRow::Rumble
+            | SettingsRow::Sleep => return,
         };
         self.go(to, Dir::Deeper);
     }
@@ -158,6 +161,13 @@ impl App {
                 self.ghosting_pending = Some(s.lcd_ghosting);
             }
             SettingsRow::Rumble => s.rumble = !s.rumble,
+            SettingsRow::Sleep => {
+                let to = sleep_step(s.sleep_minutes, right);
+                if to == s.sleep_minutes {
+                    return;
+                }
+                s.sleep_minutes = to;
+            }
             SettingsRow::Labels
             | SettingsRow::DateTime
             | SettingsRow::Network

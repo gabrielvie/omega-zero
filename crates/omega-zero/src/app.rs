@@ -43,6 +43,7 @@ use crate::screens::info::InfoScreen;
 use crate::screens::keyboard::typing_of;
 use crate::screens::lone::Lone;
 use crate::screens::power::{PowerScreen, PowerSlide};
+use crate::sleep::{SleepPlan, Verdict, DEADLINE_SLACK_S, POWER_QUIET_MS};
 use crate::ssh::{ssh_server, Ssh};
 use crate::start_notice::StartNotice;
 use crate::video_mode::{self, VideoMode};
@@ -357,6 +358,15 @@ pub struct App {
     pub(crate) power: Option<Power>,
     pub(crate) dozed_at: Millis,
     pub(crate) woke_on_press: bool,
+    /// The lid as last reported. While it is shut, POWER never wakes the screen.
+    pub(crate) lid_shut: bool,
+    /// Hardware sleep for the doze under way (software standby when not available).
+    pub(crate) sleep: SleepPlan,
+    /// POWER is ignored until then, after a hardware wake.
+    pub(crate) power_quiet_until: Millis,
+    /// The shutdown under way is the sleep duration running out, which opening the lid
+    /// cancels.
+    pub(crate) expiring: bool,
     pub(crate) autosave_at: Millis,
     pub(crate) pending_save: Option<std::thread::JoinHandle<()>>,
     pub(crate) battery_at: Millis,
@@ -513,6 +523,10 @@ impl App {
             power: None,
             dozed_at: 0,
             woke_on_press: false,
+            lid_shut: false,
+            sleep: SleepPlan::default(),
+            power_quiet_until: 0,
+            expiring: false,
             autosave_at: AUTOSAVE_MS,
             pending_save: None,
             battery_at: BATTERY_POLL_MS,
@@ -589,9 +603,43 @@ impl App {
             None => {
                 self.state.cart = None;
                 self.state.cart_platform = None;
+                self.select_remembered();
                 self.name_pending = true;
             }
         }
+    }
+
+    /// With the slot empty at boot, the shelf opens on the cart it was on when omega-zero last
+    /// stopped, or on the one played last when it stopped without saying (a crash, or the
+    /// battery pulled). When that cart is gone from the card, the shelf stays where it was.
+    fn select_remembered(&mut self) {
+        let Some(stem) = self.state.shelf_cart.clone() else {
+            return;
+        };
+        if let Some((at, i)) = self.seat_of(&stem, self.state.shelf_platform) {
+            self.shelf_at = at;
+            self.shelf_mut().select(i);
+        }
+    }
+
+    /// Notes the cart the shelf is on, so the next boot opens there; written only when it
+    /// changed.
+    pub(crate) fn remember_shelf(&mut self) {
+        let Some((platform, shelf)) = self.shelves.get(self.shelf_at) else {
+            return;
+        };
+        let Some(stem) = shelf.carts.get(shelf.index).map(|c| c.stem.clone()) else {
+            return;
+        };
+        let platform = Some(*platform);
+        if self.state.shelf_cart.as_deref() == Some(stem.as_str())
+            && self.state.shelf_platform == platform
+        {
+            return;
+        }
+        self.state.shelf_cart = Some(stem);
+        self.state.shelf_platform = platform;
+        self.persist();
     }
 
     pub(crate) fn shelf(&self) -> &Shelf {
@@ -1067,6 +1115,7 @@ impl App {
 
     pub fn restart(&mut self) {
         self.settle_saves();
+        self.remember_shelf();
         if let Some(power) = &mut self.power {
             power.restart();
         }
@@ -1163,12 +1212,28 @@ impl App {
 
     pub fn poweroff(&mut self) {
         self.settle_saves();
+        self.remember_shelf();
         if let Some(power) = &mut self.power {
             power.poweroff();
         }
     }
 
     pub fn apply(&mut self, action: Action) {
+        match action {
+            Action::LidClose => self.lid_shut = true,
+            Action::LidOpen => {
+                self.lid_shut = false;
+                self.cancel_expiry();
+            }
+            // with the lid shut POWER never lights the screen inside the case, and just after a
+            // hardware wake the press that woke the handheld must not act again
+            Action::PowerPress | Action::PowerTap | Action::PowerHold | Action::PowerOff
+                if self.lid_shut || self.now() < self.power_quiet_until =>
+            {
+                return;
+            }
+            _ => {}
+        }
         let taken = self.opening_takes(action) || self.start_notice_takes(action);
         self.press_ends_boot_fade(action);
         if taken {
@@ -1196,7 +1261,8 @@ impl App {
                 if self.woke_on_press {
                     self.wake();
                 }
-                return self.flush_resume();
+                self.flush_resume();
+                return;
             }
             Action::PowerTap => return self.power_press(),
             Action::PowerHold => return self.open_power_menu(),
@@ -2383,6 +2449,7 @@ impl App {
         self.play_held = None;
         self.refusal = None;
         self.refused_from = None;
+        self.remember_shelf();
         // a game goes in with its first disc in the drive
         self.disc_in = None;
         self.disc_swap = None;
@@ -2467,7 +2534,7 @@ impl App {
         if matches!(self.phase, Phase::Doze { .. }) {
             return;
         }
-        self.flush_resume();
+        let saved = self.flush_resume() || self.flush_resume();
         let cart = match &mut self.phase {
             Phase::Playing { cart } | Phase::Polaroids { cart } => Some(std::mem::take(cart)),
             _ => None,
@@ -2475,6 +2542,21 @@ impl App {
         self.polaroids = None;
         self.phase = Phase::Doze { cart };
         self.dozed_at = self.now();
+        let hardware = self.power.as_ref().filter(|p| p.sleep_ready());
+        // Bluetooth runs over a UART whose attachment has no part in a suspend: its devices
+        // would drop and nothing brings them back, so a doze with it on stays software standby
+        let uptime = match hardware {
+            Some(_) if self.state.bluetooth => {
+                eprintln!("omega-zero: sleep: software standby for this doze: bluetooth is on");
+                None
+            }
+            Some(p) => p.uptime(),
+            None => None,
+        };
+        self.sleep = SleepPlan::begin(self.now(), uptime, self.state.sleep_minutes, saved);
+        if !saved {
+            eprintln!("omega-zero: sleep: the game could not be saved at lid close; no automatic shutdown until it is");
+        }
         self.radio.ask(RadioJob::Cool);
         if let Some(power) = &mut self.power {
             power.on_close();
@@ -2503,7 +2585,142 @@ impl App {
         if !matches!(self.phase, Phase::Doze { .. }) {
             return;
         }
+        if self.sleep.unsaved && !self.retry_unsaved() {
+            self.dozed_at = self.now();
+            return;
+        }
         self.begin_power_off();
+    }
+
+    /// Tries the resume write again for a game that could not be saved at lid close.
+    fn retry_unsaved(&mut self) -> bool {
+        if self.flush_dozing() {
+            self.sleep.unsaved = false;
+            eprintln!("omega-zero: sleep: the game is saved now");
+            return true;
+        }
+        eprintln!("omega-zero: sleep: the game still could not be saved; staying asleep instead of shutting down");
+        false
+    }
+
+    /// The main loop may stop drawing: the handheld is dozing, and no shutdown is under way.
+    pub fn standing_by(&self) -> bool {
+        matches!(self.phase, Phase::Doze { .. }) && !self.shutting_down()
+    }
+
+    /// Whether the device loop should suspend now: dozing, past the short settle after the
+    /// lid closed or the last wake, with hardware sleep available and no shutdown or link
+    /// under way.
+    pub fn sleep_due(&self) -> bool {
+        matches!(self.phase, Phase::Doze { .. })
+            && !self.sleep.fallback
+            && !self.shutting_down()
+            && !self.link_active()
+            && self.now() >= self.sleep.next_try
+            && self.power.as_ref().is_some_and(|p| p.sleep_ready())
+    }
+
+    /// Suspends to RAM until the lid opens, the sleep duration runs out or something else
+    /// wakes the handheld, then acts on the wake. Blocks while asleep. Whether the kernel
+    /// really suspended, so what the display lost can be put back.
+    pub fn sleep_now(&mut self) -> bool {
+        if !self.sleep_due() {
+            return false;
+        }
+        let battery = self.power.as_ref().and_then(|p| p.battery());
+        if let Some(b) = battery {
+            self.battery = Some(b);
+            self.on_battery(b);
+            if self.shutting_down() {
+                return false;
+            }
+        }
+        let Some(uptime) = self.power.as_ref().and_then(|p| p.uptime()) else {
+            self.fall_back("uptime is unreadable");
+            return false;
+        };
+        let Some(left) = self.sleep.cap_for_battery(uptime, battery) else {
+            self.fall_back("no deadline");
+            return false;
+        };
+        if left <= DEADLINE_SLACK_S {
+            self.expire(uptime);
+            return false;
+        }
+        let secs = left.ceil().min(f64::from(u32::MAX)) as u32;
+        eprintln!(
+            "omega-zero: sleep: suspending for up to {secs}s (battery {})",
+            battery.map_or("unknown".to_string(), |b| format!("{}%", b.percent))
+        );
+        let Some(woke) = self.power.as_mut().map(|p| p.suspend(secs)) else {
+            return false;
+        };
+        let lid_open = self.power.as_ref().and_then(|p| p.lid_open());
+        let uptime = self
+            .power
+            .as_ref()
+            .and_then(|p| p.uptime())
+            .unwrap_or(uptime);
+        self.power_quiet_until = self.now() + POWER_QUIET_MS;
+        let now = self.now();
+        let verdict = self.sleep.judge(now, lid_open, woke.slept, uptime);
+        eprintln!(
+            "omega-zero: sleep: woke after {:.0}s asleep (slept {}, lid {}){}: {verdict:?}",
+            woke.slept_secs,
+            woke.slept,
+            match lid_open {
+                Some(true) => "open",
+                Some(false) => "shut",
+                None => "unknown",
+            },
+            if woke.detail.is_empty() {
+                String::new()
+            } else {
+                format!(", {}", woke.detail)
+            }
+        );
+        match verdict {
+            Verdict::Resume => {
+                self.lid_shut = false;
+                self.wake();
+            }
+            Verdict::Expire => self.expire(uptime),
+            Verdict::SleepAgain | Verdict::Retry => {}
+            Verdict::Fallback => self.fall_back("hardware sleep gave up for this doze"),
+        }
+        woke.slept
+    }
+
+    /// The sleep duration is up: shut down cleanly, but never with an unsaved game.
+    fn expire(&mut self, uptime: f64) {
+        if self.sleep.unsaved && !self.retry_unsaved() {
+            self.sleep.postpone(self.now(), uptime);
+            return;
+        }
+        eprintln!("omega-zero: sleep: the sleep duration is up, shutting down");
+        self.expiring = true;
+        self.begin_power_off();
+    }
+
+    /// Software standby for the rest of this doze, with its own timeout from now.
+    fn fall_back(&mut self, why: &str) {
+        eprintln!("omega-zero: sleep: software standby for this doze: {why}");
+        self.sleep.fallback = true;
+        self.dozed_at = self.now();
+    }
+
+    /// Opening the lid in the moment between the sleep running out and the power going off
+    /// keeps the game instead.
+    fn cancel_expiry(&mut self) {
+        if !(self.expiring && self.powering_off) {
+            return;
+        }
+        eprintln!("omega-zero: sleep: lid opened as the sleep ran out, shutdown cancelled");
+        self.expiring = false;
+        self.powering_off = false;
+        self.power_screen = None;
+        self.power_slide = None;
+        self.last_led = None;
     }
 
     fn power_press(&mut self) {
@@ -2926,6 +3143,9 @@ impl App {
         let (Phase::Doze { .. }, Some(power)) = (&self.phase, &self.power) else {
             return false;
         };
+        if !self.sleep.fallback && power.sleep_ready() {
+            return false;
+        }
         self.now().saturating_sub(self.dozed_at) >= power.timeout().as_millis() as Millis
     }
 
@@ -2970,28 +3190,61 @@ impl App {
         }
     }
 
-    pub fn flush_resume(&mut self) {
+    /// Writes the running game's resume state and battery save to the card, waiting for any
+    /// autosave still writing first. Returns false only when a write failed, so a game that is
+    /// safely on the card (or has nothing to save) returns true.
+    pub fn flush_resume(&mut self) -> bool {
+        let cart = self.seated().map(str::to_owned);
+        self.flush_cart(cart.as_deref())
+    }
+
+    /// The same write for the game held by a doze, used to retry a save that failed when the
+    /// lid closed. (Autosave and the rest leave a dozing game alone: it is paused.)
+    fn flush_dozing(&mut self) -> bool {
+        let cart = match &self.phase {
+            Phase::Doze { cart: Some(cart) } => Some(cart.clone()),
+            _ => None,
+        };
+        self.flush_cart(cart.as_deref())
+    }
+
+    fn flush_cart(&mut self, cart: Option<&str>) -> bool {
         self.settle_saves();
         self.autosave_at = self.now() + AUTOSAVE_MS;
-        let (Some(root), Some(snapshot), Some(cart)) = (&self.root, &self.snapshot, self.seated())
-        else {
-            return;
+        let (Some(root), Some(snapshot), Some(cart)) = (&self.root, &self.snapshot, cart) else {
+            return true;
         };
         let Some(state) = snapshot.state() else {
-            eprintln!("omega-zero: flush: the core gave up no state");
-            return;
+            if !snapshot.running() {
+                // still loading, or failed to start: no progress to lose
+                eprintln!("omega-zero: flush: no game running, nothing to save");
+                return true;
+            }
+            // A running game whose core gave no state is not saved: the caller must not treat
+            // it as safe, as a timed shutdown would throw away the game in memory. Its battery
+            // save is still written if the core offers one.
+            eprintln!("omega-zero: flush: the core gave up no state; the game is not saved");
+            let sav = snapshot.save_ram().filter(|_| snapshot.save_ram_trusted());
+            if let Err(e) =
+                persist::flush(root, self.platform, self.core, cart, None, sav.as_deref())
+            {
+                eprintln!("omega-zero: flush: {e}");
+            }
+            return false;
         };
         let (state, sav) = trusted_write(snapshot.as_ref(), state, "flush");
-        if let Err(e) = persist::flush(
+        let written = persist::flush(
             root,
             self.platform,
             self.core,
             cart,
             state.as_deref(),
             sav.as_deref(),
-        ) {
+        );
+        if let Err(e) = &written {
             eprintln!("omega-zero: flush: {e}");
         }
+        written.is_ok()
     }
 
     fn ring(&self) -> Option<StateRing> {

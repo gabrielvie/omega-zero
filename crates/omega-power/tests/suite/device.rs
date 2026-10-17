@@ -369,3 +369,74 @@ fn headphones_follow_the_detection_pin() {
     with_jack(&d, "lo");
     assert!(!platform(&d).headphones());
 }
+
+/// The RG SP's sleep interfaces under `sys`, beside `proc`, as slot.advance found them.
+fn sleep_sysfs() -> TempDir {
+    let d = tempfile::tempdir().unwrap();
+    let sys = d.path().join("sys");
+    let bat = sys.join("class/power_supply/axp2202-battery");
+    fs::create_dir_all(&bat).unwrap();
+    fs::write(bat.join("type"), "Battery\n").unwrap();
+    fs::write(bat.join("capacity"), "80\n").unwrap();
+    fs::write(bat.join("os_sleep"), "").unwrap();
+    fs::write(bat.join("hallkey"), "1\n").unwrap();
+    fs::create_dir_all(sys.join("power")).unwrap();
+    fs::write(sys.join("power/state"), "freeze mem\n").unwrap();
+    for (n, name) in [("rtc0", "rtc-pcf8563"), ("rtc1", "sunxi-rtc")] {
+        let r = sys.join("class/rtc").join(n);
+        fs::create_dir_all(&r).unwrap();
+        fs::write(r.join("name"), format!("{name}\n")).unwrap();
+        fs::write(r.join("wakealarm"), "").unwrap();
+    }
+    let pek = sys.join("devices/platform/soc/twi5/i2c-5/5-0034/axp2101-pek.0/power");
+    fs::create_dir_all(&pek).unwrap();
+    fs::write(pek.join("wakeup"), "enabled\n").unwrap();
+    fs::create_dir_all(d.path().join("proc")).unwrap();
+    fs::write(d.path().join("proc/uptime"), "42.50 1.00\n").unwrap();
+    d
+}
+
+#[test]
+fn hardware_sleep_is_armed_only_on_the_rg_sp_board() {
+    assert!(omega_power::sleeps_in_hardware(Some("rgsp")));
+    assert!(omega_power::sleeps_in_hardware(Some("rg34xxsp")));
+    for other in [None, Some("rg35xxsp"), Some("rg34xx"), Some("")] {
+        assert!(!omega_power::sleeps_in_hardware(other), "{other:?}");
+    }
+    let d = sleep_sysfs();
+    let sys = d.path().join("sys");
+    let mut p = DevicePlatform::probe(&sys, PathBuf::from("/mnt/sdcard"), Some("rg35xxsp"));
+    assert!(
+        !p.arm_sleep(),
+        "armed on a handheld it was never established on"
+    );
+    assert!(!p.sleep_ready());
+    assert!(!p.quiets_hardware());
+    assert_eq!(
+        fs::read_to_string(sys.join("class/power_supply/axp2202-battery/os_sleep")).unwrap(),
+        "",
+        "os_sleep was written on another handheld"
+    );
+    let mut p = DevicePlatform::probe(&sys, PathBuf::from("/mnt/sdcard"), Some("rgsp"));
+    assert!(!p.sleep_ready(), "ready before the lid was armed");
+    assert!(p.arm_sleep());
+    assert!(p.sleep_ready());
+    assert!(p.quiets_hardware());
+    assert_eq!(
+        fs::read_to_string(sys.join("class/power_supply/axp2202-battery/os_sleep")).unwrap(),
+        "0"
+    );
+    assert_eq!(p.uptime(), Some(42.5));
+    assert_eq!(p.lid_open(), Some(true));
+}
+
+#[test]
+fn an_rg_sp_missing_an_interface_stays_on_software_standby() {
+    let d = sleep_sysfs();
+    let sys = d.path().join("sys");
+    fs::write(sys.join("power/state"), "freeze\n").unwrap();
+    let mut p = DevicePlatform::probe(&sys, PathBuf::from("/mnt/sdcard"), Some("rgsp"));
+    assert!(!p.arm_sleep());
+    assert!(!p.sleep_ready());
+    assert!(!p.suspend(600).slept);
+}

@@ -111,6 +111,19 @@ pub(crate) fn apply_device() -> io::Result<Option<String>> {
     Ok(target.map(str::to_owned))
 }
 
+/// Sets the calibrated table again, as after a suspend to RAM: the display engine is
+/// suspended with the rest of the devices, and what it held then is not counted on to survive.
+/// Does nothing on a panel with no measured table.
+pub fn recalibrate_panel() {
+    match apply_device() {
+        Ok(Some(target)) => {
+            eprintln!("omega-zero: display calibration: {target} panel table on again")
+        }
+        Ok(None) => {}
+        Err(e) => eprintln!("omega-zero: display calibration: {e}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

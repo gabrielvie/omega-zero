@@ -595,6 +595,25 @@ impl Frontend {
         self.start.elapsed().as_millis() as Millis
     }
 
+    /// Whether the main loop may stop drawing: the handheld is dozing and no shutdown is under
+    /// way.
+    pub fn standing_by(&self) -> bool {
+        self.session.app().standing_by()
+    }
+
+    /// Whether the handheld should suspend to RAM now (see `App::sleep_due`).
+    pub fn sleep_due(&self) -> bool {
+        self.session.app().sleep_due()
+    }
+
+    /// Suspends until woken, then acts on the wake. Blocks while asleep. Whether the kernel
+    /// really suspended.
+    pub fn sleep_now(&mut self) -> bool {
+        let slept = self.session.app_mut().sleep_now();
+        self.last = Instant::now();
+        slept
+    }
+
     pub fn powering_off(&self) -> bool {
         self.session.app().ready_to_power_off()
     }

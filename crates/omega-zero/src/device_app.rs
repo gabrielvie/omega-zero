@@ -4,11 +4,12 @@ use std::time::{Duration, Instant};
 use omega_gfx::{
     canvas, set_canvas, Canvas, Compositor, FbdevSurface, Rotation, Surface, CANVAS_ENV,
 };
-use omega_power::{baseos_release, trace_first_frame, DevicePlatform};
+use omega_power::{baseos_release, quiet_hardware, trace_first_frame, DevicePlatform, Quiet};
 use omega_ui::UndoFace;
 use omega_zero::frontend::Frontend;
 use omega_zero::input::DeviceInput;
 use omega_zero::pacing::FramePacer;
+use omega_zero::standby::{Standby, Step, STANDBY_REST};
 
 const CARD: &str = "/mnt/sdcard";
 
@@ -64,6 +65,12 @@ impl Pacer {
         self.work = self.works.iter().copied().max().unwrap_or(work);
         self.last_return = Some(now);
         missed
+    }
+
+    /// After standing by, the last swap is long past: start pacing afresh rather than
+    /// counting the whole doze as one missed frame.
+    fn resume(&mut self) {
+        self.last_return = None;
     }
 }
 
@@ -142,8 +149,13 @@ pub fn run() {
     if let Err(e) = compositor.set_rotation(rotation) {
         eprintln!("omega-zero: the panel cannot be turned {rotation:?}, drawing it unturned: {e}");
     }
-    let platform = DevicePlatform::new(root.clone());
+    let mut platform = DevicePlatform::new(root.clone());
     eprintln!("omega-zero: {}", platform.report());
+    // hardware sleep first and on its own: the optional quieting below can never stop it
+    platform.arm_sleep();
+    if platform.quiets_hardware() {
+        quiet_hardware(Quiet::device());
+    }
     platform.trace_boot();
     let mut frontend = Frontend::boot(Box::new(platform));
     frontend.upload_faces(&mut compositor);
@@ -162,12 +174,44 @@ pub fn run() {
     let mut clocked = FramePacer::new(Instant::now());
     let (mut frames, mut missed, mut early) = (0u32, 0u32, 0u32);
     let mut high = frontend.high_refresh();
+    let mut standby = Standby::new();
     eprintln!(
         "omega-zero: refresh: {} Hz, the loop paced by {}",
         if high { 120 } else { 60 },
         if high { "its own clock" } else { "the swap" }
     );
     loop {
+        if standby.step(frontend.standing_by()) == Step::Rest {
+            // dozing behind a dark panel: no emulator tick, no render, no swap. Input, the lid
+            // poll and the app's timers (the doze timeout among them) still run
+            std::thread::sleep(STANDBY_REST);
+            frontend.advance(&mut input);
+            if frontend.restarting() {
+                frontend.restart();
+            }
+            if frontend.powering_off() {
+                frontend.poweroff();
+                return;
+            }
+            if frontend.sleep_due() {
+                // suspend to RAM; it returns once awake, the app having decided whether to
+                // carry on, sleep again or shut down
+                if frontend.sleep_now() {
+                    // the display engine was suspended with everything else: its calibration
+                    // table goes back (the 120 Hz registers go back as the lid opens)
+                    omega_gfx::recalibrate_panel();
+                }
+                input.after_wake();
+                pacer.resume();
+                clocked = FramePacer::new(Instant::now());
+                continue;
+            }
+            if !frontend.standing_by() {
+                pacer.resume();
+                clocked = FramePacer::new(Instant::now());
+            }
+            continue;
+        }
         // at 120 Hz a swap returns twice a game frame: the loop keeps its own clock there,
         // ticking the game once a period of its own and presenting at the next refresh
         if frontend.high_refresh() != high {

@@ -16,10 +16,19 @@ pub const FF_SPEEDS: [u8; 4] = [2, 3, 4, 6];
 
 pub const FF_SPEED_DEFAULT: u8 = 6;
 
+/// How long a closed handheld sleeps before it shuts down, in minutes (Settings > Sleep).
+pub const SLEEP_MINUTES: [u16; 6] = [3, 15, 30, 60, 120, 480];
+
+pub const SLEEP_MINUTES_DEFAULT: u16 = 30;
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct AppState {
     pub cart: Option<String>,
     pub cart_platform: Option<Platform>,
+    /// The cart the shelf was on when omega-zero last stopped, or the one last played, with
+    /// its system: where the shelf opens when no cart is in the slot.
+    pub shelf_cart: Option<String>,
+    pub shelf_platform: Option<Platform>,
     pub brightness: u8,
     pub blue_light: u8,
     pub volume: u8,
@@ -55,6 +64,9 @@ pub struct AppState {
     pub backdrop_colour: u8,
     /// The font the bar's actions write their big words in.
     pub font: Font,
+    /// Minutes asleep with the lid shut before the handheld shuts down, one of
+    /// `SLEEP_MINUTES`.
+    pub sleep_minutes: u16,
 }
 
 impl Default for AppState {
@@ -62,6 +74,8 @@ impl Default for AppState {
         AppState {
             cart: None,
             cart_platform: None,
+            shelf_cart: None,
+            shelf_platform: None,
             brightness: 5,
             blue_light: 0,
             volume: 60,
@@ -83,6 +97,7 @@ impl Default for AppState {
             backdrop_moving: true,
             backdrop_colour: 0,
             font: Font::Bold,
+            sleep_minutes: SLEEP_MINUTES_DEFAULT,
         }
     }
 }
@@ -101,7 +116,7 @@ pub fn read_app_state(root: &Path) -> AppState {
 
 pub fn write_app_state(root: &Path, s: &AppState) -> std::io::Result<()> {
     let text = format!(
-        "cart={}\ncart_platform={}\nbrightness={}\nblue_light={}\nvolume={}\nvolume_hp={}\nmuted={}\nmuted_hp={}\nclock_set={}\nutc_offset_min={}\nrumble={}\nff_speed={}\nff_sound={}\ncolour_correction={}\nlcd_ghosting={}\nhigh_refresh={}\nwifi={}\nssh={}\nbluetooth={}\nbackdrop={}\nbackdrop_moving={}\nbackdrop_colour={}\nfont={}\n",
+        "cart={}\ncart_platform={}\nbrightness={}\nblue_light={}\nvolume={}\nvolume_hp={}\nmuted={}\nmuted_hp={}\nclock_set={}\nutc_offset_min={}\nrumble={}\nff_speed={}\nff_sound={}\ncolour_correction={}\nlcd_ghosting={}\nhigh_refresh={}\nwifi={}\nssh={}\nbluetooth={}\nbackdrop={}\nbackdrop_moving={}\nbackdrop_colour={}\nfont={}\nsleep_minutes={}\nshelf_cart={}\nshelf_platform={}\n",
         s.cart.as_deref().unwrap_or(""),
         s.cart_platform.map_or(String::new(), platform_key),
         s.brightness,
@@ -124,7 +139,10 @@ pub fn write_app_state(root: &Path, s: &AppState) -> std::io::Result<()> {
         s.backdrop.map_or("", BackdropStyle::key),
         s.backdrop_moving as u8,
         BACKDROP_COLOURS[(s.backdrop_colour as usize).min(BACKDROP_COLOURS.len() - 1)],
-        s.font.key()
+        s.font.key(),
+        s.sleep_minutes,
+        s.shelf_cart.as_deref().unwrap_or(""),
+        s.shelf_platform.map_or(String::new(), platform_key),
     );
     atomic_write(&state_path(root), text.as_bytes())
 }
@@ -153,6 +171,9 @@ fn parse(text: &str) -> Option<AppState> {
     let mut backdrop_moving = None;
     let mut backdrop_colour = None;
     let mut font = None;
+    let mut sleep_minutes = None;
+    let mut shelf_cart = None;
+    let mut shelf_platform = None;
     for line in text.lines().filter(|l| !l.is_empty()) {
         let Some((key, value)) = line.split_once('=') else {
             continue;
@@ -182,6 +203,15 @@ fn parse(text: &str) -> Option<AppState> {
             "backdrop_moving" => backdrop_moving = flag(value),
             "backdrop_colour" => backdrop_colour = colour_index(value),
             "font" => font = Font::from_key(value),
+            "sleep_minutes" => {
+                sleep_minutes = value
+                    .trim()
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|m| SLEEP_MINUTES.contains(m))
+            }
+            "shelf_cart" => shelf_cart = (!value.is_empty()).then(|| value.to_string()),
+            "shelf_platform" => shelf_platform = platform_value(value),
             _ => {}
         }
     }
@@ -190,6 +220,8 @@ fn parse(text: &str) -> Option<AppState> {
     Some(AppState {
         cart: (!cart.is_empty()).then_some(cart),
         cart_platform,
+        shelf_platform: shelf_cart.as_ref().and(shelf_platform),
+        shelf_cart,
         brightness: brightness?,
         blue_light: blue_light?,
         volume: volume?,
@@ -211,6 +243,7 @@ fn parse(text: &str) -> Option<AppState> {
         backdrop_moving: backdrop_moving.unwrap_or(fallback.backdrop_moving),
         backdrop_colour: backdrop_colour.unwrap_or(fallback.backdrop_colour),
         font: font.unwrap_or(fallback.font),
+        sleep_minutes: sleep_minutes.unwrap_or(fallback.sleep_minutes),
     })
 }
 

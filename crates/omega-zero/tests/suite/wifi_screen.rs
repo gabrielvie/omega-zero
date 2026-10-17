@@ -279,11 +279,11 @@ fn a_on_wifi_opens_its_screen_and_b_comes_back_to_the_row() {
 fn a_handheld_without_a_radio_has_no_network_row() {
     let mut r = Rig::with(AppState::default(), Radio::absent());
     assert!(!r.a.settings_rows().contains(&SettingsRow::Network));
-    r.open_menu_at(SettingsRow::DateTime);
+    r.open_menu_at(SettingsRow::Sleep);
     r.press(Btn::Down);
     assert_eq!(r.a.settings_row(), Some(SettingsRow::Bluetooth));
     r.press(Btn::Up);
-    assert_eq!(r.a.settings_row(), Some(SettingsRow::DateTime));
+    assert_eq!(r.a.settings_row(), Some(SettingsRow::Sleep));
 }
 
 #[test]

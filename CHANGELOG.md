@@ -1,5 +1,42 @@
 # Changelog
 
+## omega-zero 1.4.0
+
+The RG SP sleeps for real with its lid shut, and the shelf opens where it was left.
+
+- On the RG SP, closing the lid, or a tap of POWER, saves the game to its suspend slot and then
+  suspends the handheld to RAM, as slot.advance does. Opening the lid carries the game on from the
+  same moment, with nothing loaded again. The lid and the SoC's own clock (`sunxi-rtc`, never the
+  other one) are armed as wake sources at start-up and checked again before every suspend; one
+  that cannot be armed is never entered. A quick flick of the lid never reaches the kernel: the
+  first suspend waits 400 ms. With the lid shut POWER does nothing, so the screen never lights in
+  a closed case, and for 3 seconds after a wake POWER is ignored, so the press that woke it cannot
+  send it back to sleep.
+- Sleep, new in GENERAL under Date & Time, sets how long it sleeps before it shuts down by itself:
+  3 MIN, 15 MIN, 30 MIN (the default), 1 H, 2 H or 8 H, kept in `Config/omega-zero.state` as
+  `sleep_minutes`. The next boot resumes the game from its suspend slot. The timer never shuts
+  down a game that could not be saved: it tries the save again every 30 minutes until it is. On
+  battery, the sleep is cut short to leave about 10% (21 minutes for each percent over 10, none on
+  the charger), and the 5% shutdown stays as it was.
+- Where hardware sleep is not there or gives up (two failed suspends in a row, or more than 20
+  wakes in one sleep), and whenever Bluetooth is on, a doze is the software standby it always was,
+  powering off after 3 minutes, now with the loop drawing and ticking nothing behind the dark
+  panel. After a suspend the panel's calibration table is set again, the 120 Hz registers are set
+  again as the lid opens, the frame pacing starts afresh, and the sound lets the device go after 3
+  seconds of silence and opens it again for the next sound, so a suspend never finds it open. The
+  lid is read from the driver and checked against the sensor's own level, so a stale "shut" after
+  a wake cannot keep the screen dark.
+- The RG SP's six USB host controllers with nothing wired to them are switched off once at
+  start-up; the USB-C port's own controller is never touched. Wi-Fi is left as BaseOS started it:
+  Network can switch it on at any time, and nothing shows how to load its driver again once taken
+  out.
+- After a reboot the shelf opens on the cart it was on when omega-zero stopped, on whichever
+  system's shelf, or on the cart played last when it stopped without warning. omega-zero only
+  ever remembered the cart in the slot: taking a game out wrote `cart=` empty, and nothing kept
+  the shelf's place, so every boot with the slot empty began on the first cart of the first shelf.
+  The shelf's cart is now kept beside it, as `shelf_cart` and `shelf_platform`, each time a game
+  goes in and as the handheld powers off or restarts.
+
 ## omega-zero 1.3.0
 
 The handhelds' games ghost as their LCDs did, and the RG SP and the RG34XX handhelds get their
