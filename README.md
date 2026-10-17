@@ -55,9 +55,13 @@ is the most useful thing you can send.
   Advance Wars, Mario Kart and Tetris.
 - Settings on START, in windows in the style of Mega Man Zero's menus that slide from screen to
   screen, over a background that keeps moving: CONFIGS (Fast Forward, Fast Forward Sound, Colour
-  Correction, LCD Ghosting, Rumble, Labels) and GENERAL (Date & Time, Network, Bluetooth, Theme,
-  About).
+  Correction, LCD Ghosting, Rumble, Labels) and GENERAL (Date & Time, Sleep, Network, Bluetooth,
+  Theme, About).
 - On the RG SP, RG34XX SP and RG34XX, the panel runs at 120 Hz and its colours are calibrated.
+- On the RG SP, closing the lid suspends to RAM: opening it carries the game on from the same
+  moment, and after the time set in Sleep (30 minutes by default) the handheld shuts down and
+  resumes the game at the next boot.
+- After a reboot the shelf opens on the cart it was left on, or the one played last.
 - A tap of SELECT opens CONTROLS: what every button does, on the shelf and in a game, on one panel.
 - Network: home Wi-Fi, network time, and SSH and SFTP, each ON or OFF. Y on one opens its panel:
   SSH's shows the login and root's own random password. Labels are fetched from ScreenScraper,
@@ -121,6 +125,9 @@ omega-zero is made by **Otávio ([@oauramos](https://github.com/oauramos))**.
 - Based on [slot](https://github.com/BrandonKowalski/slot) by
   [Brandon T. Kowalski](https://github.com/BrandonKowalski) (GPL-3.0). The code that hosts the
   cores, with their saves, sound and input, is still largely his.
+- Sleep, the lid, the wake timer and the idle USB controllers on the RG SP come from
+  [slot.advance](https://github.com/suprsomething/slot.advance) by suprsomething (GPL-3.0), a
+  fork of slot, as does reopening the shelf on the cart played last.
 - [BaseOS](https://github.com/pvaibhav/BaseOS) by pvaibhav.
 - Emulation by [mGBA](https://mgba.io) (MPL-2.0) and [gpSP](https://github.com/libretro/gpsp)
   (GPL-2.0) for the Game Boys; [Snes9x](https://github.com/libretro/snes9x) (free for

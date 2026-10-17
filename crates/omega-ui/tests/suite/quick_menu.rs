@@ -5,7 +5,7 @@ use omega_store::{parse_stamp, FF_SPEEDS};
 use omega_ui::kit::layout::modal_rect;
 use omega_ui::kit::modal::{modal_face, CUT};
 use omega_ui::kit::palette::{palette, Palette};
-use omega_ui::kit::row::ROW_H;
+use omega_ui::kit::row::{REACH, ROW_H};
 use omega_ui::{
     date_time_text, settings_frame, settings_panels, settings_row_face, settings_row_rects,
     settings_row_width, settings_title_face, ClockPicker, QuickValue, RowShown, SettingsBaked,
@@ -28,6 +28,7 @@ fn flow_rows(lit: SettingsRow) -> Vec<RowShown> {
         SettingsRow::FastForwardSound | SettingsRow::ColourCorrection => Some("OFF"),
         SettingsRow::Rumble | SettingsRow::LcdGhosting => Some("ON"),
         SettingsRow::DateTime => Some("OCT 10 16:00"),
+        SettingsRow::Sleep => Some("30 MIN"),
         SettingsRow::Network => Some("HOME"),
         SettingsRow::Bluetooth => Some("8BITDO SN30 PRO"),
         _ => None,
@@ -142,7 +143,12 @@ fn every_row_stands_in_its_own_panels_well() {
     for (row, [x, y, w, h]) in &rects {
         let [wx, wy, ww, wh] = frame.wells[row.group().index()];
         assert_eq!((*x, *w, *h), (wx - 1, ww + 2, ROW_H), "{row:?}");
-        assert!(*y >= wy && y + h <= wy + wh, "{row:?} is out of its well");
+        // a full GENERAL's last row lays its clear bottom edge on the well's frame, as flow.html
+        // lays it, a pixel in as it is at the sides
+        assert!(
+            *y >= wy && y + h <= wy + wh + REACH,
+            "{row:?} is out of its well"
+        );
     }
     let at = |row: SettingsRow| rects.iter().find(|(r, _)| *r == row).unwrap().1;
     assert_eq!(
@@ -173,12 +179,16 @@ fn without_a_radio_the_rows_after_network_close_up_and_the_panels_stay() {
     assert_eq!(frame.wells, all.wells, "hiding Network moved a panel");
     let rects = settings_row_rects(&rows, frame.wells);
     let y = |row: SettingsRow| rects.iter().find(|(r, _)| *r == row).unwrap().1[1];
-    assert_eq!(y(SettingsRow::Bluetooth), y(SettingsRow::DateTime) + ROW_H);
+    assert_eq!(y(SettingsRow::Sleep), y(SettingsRow::DateTime) + ROW_H);
     assert_eq!(
-        y(SettingsRow::Background),
+        y(SettingsRow::Bluetooth),
         y(SettingsRow::DateTime) + 2 * ROW_H
     );
-    assert_eq!(y(SettingsRow::About), y(SettingsRow::DateTime) + 3 * ROW_H);
+    assert_eq!(
+        y(SettingsRow::Background),
+        y(SettingsRow::DateTime) + 3 * ROW_H
+    );
+    assert_eq!(y(SettingsRow::About), y(SettingsRow::DateTime) + 4 * ROW_H);
     assert!(rects.iter().all(|(r, _)| *r != SettingsRow::Network));
 }
 
@@ -288,7 +298,8 @@ fn the_rows_left_and_right_change_step_between_arrows_and_the_rows_that_open_end
             SettingsRow::FastForwardSound,
             SettingsRow::ColourCorrection,
             SettingsRow::LcdGhosting,
-            SettingsRow::Rumble
+            SettingsRow::Rumble,
+            SettingsRow::Sleep
         ]
     );
     let pal = palette(NIGHT);
@@ -466,6 +477,7 @@ fn the_rows_run_in_the_order_the_user_chose() {
             "Rumble",
             "Labels",
             "Date & Time",
+            "Sleep",
             "Network",
             "Bluetooth",
             "Theme",
@@ -517,18 +529,25 @@ fn a_hidden_row_is_stepped_over_both_ways() {
         .into_iter()
         .filter(|r| *r != SettingsRow::Network)
         .collect();
-    assert_eq!(SettingsRow::DateTime.down_in(&rows), SettingsRow::Bluetooth);
-    assert_eq!(SettingsRow::Bluetooth.up_in(&rows), SettingsRow::DateTime);
+    assert_eq!(SettingsRow::Sleep.down_in(&rows), SettingsRow::Bluetooth);
+    assert_eq!(SettingsRow::Bluetooth.up_in(&rows), SettingsRow::Sleep);
     assert_eq!(SettingsRow::About.down_in(&rows), SettingsRow::FastForward);
-    assert_eq!(SettingsRow::DateTime.down(), SettingsRow::Network);
+    assert_eq!(SettingsRow::Sleep.down(), SettingsRow::Network);
+    assert_eq!(SettingsRow::DateTime.down(), SettingsRow::Sleep);
 }
 
 #[test]
 fn the_values_read_as_flow_prints_them() {
     assert_eq!(
         QuickValue::ALL.map(QuickValue::text),
-        ["2X", "3X", "4X", "6X", "ON", "OFF"]
+        ["2X", "3X", "4X", "6X", "ON", "OFF", "3 MIN", "15 MIN", "30 MIN", "1 H", "2 H", "8 H"]
     );
+    let sleeps = omega_store::SLEEP_MINUTES.map(|m| QuickValue::sleep(m).map(QuickValue::text));
+    assert_eq!(
+        sleeps,
+        ["3 MIN", "15 MIN", "30 MIN", "1 H", "2 H", "8 H"].map(Some)
+    );
+    assert_eq!(QuickValue::sleep(7), None);
     assert_eq!(QuickValue::flag(true), QuickValue::On);
     assert_eq!(QuickValue::flag(false), QuickValue::Off);
 }

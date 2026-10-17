@@ -456,3 +456,164 @@ fn a_session_put_away_while_its_core_opens_leaves_no_note() {
     drop(s);
     assert!(!note.exists(), "a clean power-off was taken for a crash");
 }
+
+/// A card with GBA carts and, on a shelf after GBA's, SNES carts.
+fn two_shelves() -> tempfile::TempDir {
+    let d = tmp_root_with_carts(&[
+        "Advance Wars",
+        "Emerald",
+        "Mario Kart - Super Circuit (USA) (Wii U Virtual Console)",
+    ]);
+    let snes = d.path().join("Games").join(Platform::Snes.dir_name());
+    std::fs::create_dir_all(&snes).unwrap();
+    for stem in ["Chrono Trigger", "EarthBound", "Super Metroid"] {
+        std::fs::write(snes.join(format!("{stem}.sfc")), vec![0u8; 0x8000]).unwrap();
+    }
+    d
+}
+
+fn shelf_on(a: &App) -> (Option<&'static str>, Option<&str>) {
+    (a.shelf_platform_name(), a.selected_stem())
+}
+
+#[test]
+fn an_empty_slot_boots_onto_the_cart_the_shelf_was_left_on_on_any_shelf() {
+    let d = two_shelves();
+    write_app_state(
+        d.path(),
+        &AppState {
+            shelf_cart: Some("EarthBound".into()),
+            shelf_platform: Some(Platform::Snes),
+            clock_set: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let a = App::boot(d.path());
+    assert!(matches!(a.phase(), Phase::Shelf));
+    assert_eq!(shelf_on(&a), (Some("Super Nintendo"), Some("EarthBound")));
+}
+
+#[test]
+fn a_remembered_cart_that_is_gone_leaves_the_shelf_where_it_was() {
+    let d = two_shelves();
+    write_app_state(
+        d.path(),
+        &AppState {
+            shelf_cart: Some("Deleted".into()),
+            shelf_platform: Some(Platform::Snes),
+            clock_set: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let a = App::boot(d.path());
+    assert_eq!(
+        shelf_on(&a),
+        (Some("Game Boy Advance"), Some("Advance Wars"))
+    );
+}
+
+#[test]
+fn a_seated_cart_on_a_later_shelf_resumes_with_the_shelf_on_it() {
+    let d = two_shelves();
+    write_app_state(
+        d.path(),
+        &AppState {
+            cart: Some("Super Metroid".into()),
+            cart_platform: Some(Platform::Snes),
+            clock_set: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let a = App::boot(d.path());
+    let Phase::Inserting { cart, .. } = a.phase() else {
+        panic!("the seated cart was not resumed: {:?}", a.phase())
+    };
+    assert_eq!(cart, "Super Metroid");
+    assert_eq!(
+        shelf_on(&a),
+        (Some("Super Nintendo"), Some("Super Metroid"))
+    );
+}
+
+#[test]
+fn the_cart_in_the_slot_named_on_the_card_resumes_by_its_full_name() {
+    let d = two_shelves();
+    let stem = "Mario Kart - Super Circuit (USA) (Wii U Virtual Console)";
+    std::fs::write(
+        d.path().join("Config/omega-zero.state"),
+        format!("cart={stem}\ncart_platform=gba\nbrightness=5\nblue_light=0\nvolume=60\nmuted=0\nclock_set=1\nutc_offset_min=0\n"),
+    )
+    .unwrap();
+    let a = App::boot(d.path());
+    let Phase::Inserting { cart, .. } = a.phase() else {
+        panic!("the seated cart was not resumed: {:?}", a.phase())
+    };
+    assert_eq!(cart, stem);
+    assert_eq!(shelf_on(&a), (Some("Game Boy Advance"), Some(stem)));
+}
+
+#[test]
+fn after_an_eject_and_a_crash_the_shelf_opens_on_the_cart_played_last() {
+    let d = two_shelves();
+    write_app_state(
+        d.path(),
+        &AppState {
+            clock_set: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut a = App::boot(d.path());
+    a.apply(Action::GbaDown(Btn::R1));
+    a.apply(Action::GbaUp(Btn::R1));
+    a.apply(Action::ShelfRight);
+    assert_eq!(shelf_on(&a), (Some("Super Nintendo"), Some("EarthBound")));
+    a.apply(Action::Insert);
+    a.on_core_ready();
+    for _ in 0..120 {
+        a.update(1.0 / 60.0);
+    }
+    a.apply(Action::Eject);
+    for _ in 0..120 {
+        a.update(1.0 / 60.0);
+    }
+    assert!(matches!(a.phase(), Phase::Shelf));
+    assert_eq!(read_app_state(d.path()).cart, None);
+    // omega-zero is killed here: nothing more is written
+    drop(a);
+    let a = App::boot(d.path());
+    assert!(matches!(a.phase(), Phase::Shelf));
+    assert_eq!(shelf_on(&a), (Some("Super Nintendo"), Some("EarthBound")));
+}
+
+#[test]
+fn powering_off_on_the_shelf_keeps_the_cart_it_was_on() {
+    let d = two_shelves();
+    write_app_state(
+        d.path(),
+        &AppState {
+            clock_set: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut a = App::boot(d.path());
+    a.apply(Action::GbaDown(Btn::R1));
+    a.apply(Action::GbaUp(Btn::R1));
+    a.apply(Action::ShelfRight);
+    a.apply(Action::ShelfRight);
+    assert_eq!(
+        shelf_on(&a),
+        (Some("Super Nintendo"), Some("Super Metroid"))
+    );
+    // no platform to take the handheld down: this writes what it would before it does
+    a.poweroff();
+    let a = App::boot(d.path());
+    assert_eq!(
+        shelf_on(&a),
+        (Some("Super Nintendo"), Some("Super Metroid"))
+    );
+}

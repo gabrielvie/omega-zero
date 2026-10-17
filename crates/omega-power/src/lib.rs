@@ -1,20 +1,26 @@
 mod baseos;
 mod device;
+mod lid;
 mod motor;
 mod power;
+mod quiet;
 mod refresh;
 mod sim;
+mod sleep;
 
 pub use baseos::{
     baseos_release, parse_baseos_release, read_baseos_release, BaseosRelease, BASEOS_RELEASE,
 };
 pub use device::{
-    has_bit, motor_change, motor_pin, record_first_frame, rumble_node, trace_first_frame,
-    uptime_seconds, DevicePlatform,
+    has_bit, motor_change, motor_pin, record_first_frame, rumble_node, sleeps_in_hardware,
+    trace_first_frame, uptime_seconds, DevicePlatform,
 };
+pub use lid::{raw_level, LidReading, LidSensor};
 pub use motor::Motor;
 pub use power::Power;
+pub use quiet::{quiet_hardware, Quiet, QuietReport, IDLE_CONTROLLERS};
 pub use sim::SimPlatform;
+pub use sleep::{SleepPaths, Woke, MIN_SLEEP_SECS};
 
 use std::path::Path;
 use std::time::Duration;
@@ -77,6 +83,28 @@ pub trait Platform: Send {
 
     fn headphones(&self) -> bool {
         false
+    }
+
+    /// Whether genuine suspend-to-RAM with lid wake is available. Platforms without it keep
+    /// the software standby.
+    fn sleep_ready(&self) -> bool {
+        false
+    }
+
+    /// Suspends to RAM with the timer set `secs` ahead, and returns once the handheld is
+    /// awake again. Only called when `sleep_ready` says so.
+    fn suspend(&mut self, _secs: u32) -> Woke {
+        Woke::refused("this platform has no hardware sleep")
+    }
+
+    /// Seconds since boot, counting time spent suspended.
+    fn uptime(&self) -> Option<f64> {
+        None
+    }
+
+    /// The lid as the hardware reports it now, if it can be read.
+    fn lid_open(&self) -> Option<bool> {
+        None
     }
 }
 

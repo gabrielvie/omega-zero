@@ -17,6 +17,7 @@ mod shaders;
 mod surface;
 
 pub use canvas::{canvas, out_h, out_w, set_canvas, Canvas, CANVAS_ENV};
+pub use displaycal::recalibrate_panel;
 pub use draw::{spun_x, Draw, MeshId, MeshVertex, TexId, FOCAL};
 pub use fbdev::{egl_error, panel_mode, panel_size, FbdevSurface};
 pub use fbo::{Bezel, Compositor, BACKDROP};

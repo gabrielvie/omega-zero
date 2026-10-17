@@ -7,7 +7,7 @@ use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::refresh::PanelRefresh;
-use crate::{Battery, Charge, LedState, Platform};
+use crate::{Battery, Charge, LedState, Platform, SleepPaths, Woke};
 
 const TOP_STEP: u32 = 9;
 
@@ -82,6 +82,15 @@ pub struct DevicePlatform {
     motor: Option<Motor>,
     led: Option<Led>,
     refresh: Option<PanelRefresh>,
+    sleep: Result<SleepPaths, String>,
+    sleep_armed: bool,
+    target: Option<String>,
+}
+
+/// The handhelds whose suspend to RAM, lid wake and idle USB controllers were established on
+/// the device (by slot.advance, on the RG SP): the BaseOS targets of the RG SP's board.
+pub fn sleeps_in_hardware(target: Option<&str>) -> bool {
+    matches!(target, Some("rgsp" | "rg34xxsp"))
 }
 
 impl DevicePlatform {
@@ -137,7 +146,44 @@ impl DevicePlatform {
             motor,
             led,
             refresh: target.and_then(|target| PanelRefresh::probe(sysfs, target)),
+            sleep: if sleeps_in_hardware(target) {
+                SleepPaths::probe(sysfs, &sysfs.with_file_name("proc"))
+            } else {
+                Err(format!(
+                    "not established on this handheld (BaseOS target {})",
+                    target.unwrap_or("unknown")
+                ))
+            },
+            sleep_armed: false,
+            target: target.map(str::to_owned),
         }
+    }
+
+    /// Arms the lid as a wake source for this session. Hardware sleep is only offered once
+    /// this has worked; until then (or if it never does) dozing stays software standby.
+    pub fn arm_sleep(&mut self) -> bool {
+        self.sleep_armed = match &self.sleep {
+            Ok(paths) => match paths.arm() {
+                Ok(()) => true,
+                Err(e) => {
+                    eprintln!("omega-zero: sleep: unavailable, software standby only: {e}");
+                    false
+                }
+            },
+            Err(e) => {
+                eprintln!("omega-zero: sleep: unavailable, software standby only: {e}");
+                false
+            }
+        };
+        if self.sleep_armed {
+            eprintln!("omega-zero: sleep: ready (lid and rtc1 wake armed)");
+        }
+        self.sleep_armed
+    }
+
+    /// Whether this handheld's idle USB host controllers are the ones the quiet job knows.
+    pub fn quiets_hardware(&self) -> bool {
+        sleeps_in_hardware(self.target.as_deref())
     }
 
     fn breadcrumb(&self, line: &str) {
@@ -547,6 +593,33 @@ impl Platform for DevicePlatform {
 
     fn high_refresh_enabled(&self) -> bool {
         self.refresh.as_ref().is_some_and(PanelRefresh::enabled)
+    }
+
+    fn sleep_ready(&self) -> bool {
+        self.sleep_armed && self.sleep.is_ok()
+    }
+
+    fn suspend(&mut self, secs: u32) -> Woke {
+        match (&self.sleep, self.sleep_armed) {
+            (Ok(paths), true) => paths.suspend(secs),
+            _ => Woke::refused("hardware sleep is not armed"),
+        }
+    }
+
+    fn uptime(&self) -> Option<f64> {
+        match &self.sleep {
+            Ok(paths) => paths.uptime(),
+            Err(_) => fs::read_to_string("/proc/uptime")
+                .ok()?
+                .split_whitespace()
+                .next()?
+                .parse()
+                .ok(),
+        }
+    }
+
+    fn lid_open(&self) -> Option<bool> {
+        self.sleep.as_ref().ok()?.lid_open()
     }
 
     fn resume_display(&mut self) {

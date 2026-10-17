@@ -310,6 +310,7 @@ fn bluetooth_is_listed_under_network_and_opens_its_screen() {
         general,
         [
             SettingsRow::DateTime,
+            SettingsRow::Sleep,
             SettingsRow::Network,
             SettingsRow::Bluetooth,
             SettingsRow::Background,

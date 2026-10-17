@@ -62,6 +62,8 @@ pub enum SettingsRow {
     Rumble,
     Labels,
     DateTime,
+    /// How long the handheld sleeps with the lid shut before it shuts down.
+    Sleep,
     Network,
     Bluetooth,
     /// THEME on the screen: the background, its motion and the colour everything takes, and the
@@ -71,7 +73,7 @@ pub enum SettingsRow {
 }
 
 impl SettingsRow {
-    pub const ALL: [SettingsRow; 11] = [
+    pub const ALL: [SettingsRow; 12] = [
         SettingsRow::FastForward,
         SettingsRow::FastForwardSound,
         SettingsRow::ColourCorrection,
@@ -79,6 +81,7 @@ impl SettingsRow {
         SettingsRow::Rumble,
         SettingsRow::Labels,
         SettingsRow::DateTime,
+        SettingsRow::Sleep,
         SettingsRow::Network,
         SettingsRow::Bluetooth,
         SettingsRow::Background,
@@ -98,6 +101,7 @@ impl SettingsRow {
             SettingsRow::Rumble => "Rumble",
             SettingsRow::Labels => "Labels",
             SettingsRow::DateTime => "Date & Time",
+            SettingsRow::Sleep => "Sleep",
             SettingsRow::Network => "Network",
             SettingsRow::Bluetooth => "Bluetooth",
             SettingsRow::Background => "Theme",
@@ -114,6 +118,7 @@ impl SettingsRow {
             | SettingsRow::Rumble
             | SettingsRow::Labels => SettingsGroup::Configs,
             SettingsRow::DateTime
+            | SettingsRow::Sleep
             | SettingsRow::Network
             | SettingsRow::Bluetooth
             | SettingsRow::Background
@@ -145,6 +150,7 @@ impl SettingsRow {
                 | SettingsRow::ColourCorrection
                 | SettingsRow::LcdGhosting
                 | SettingsRow::Rumble
+                | SettingsRow::Sleep
         )
     }
 
@@ -178,16 +184,28 @@ pub enum QuickValue {
     Speed6,
     On,
     Off,
+    Min3,
+    Min15,
+    Min30,
+    Hr1,
+    Hr2,
+    Hr8,
 }
 
 impl QuickValue {
-    pub const ALL: [QuickValue; 6] = [
+    pub const ALL: [QuickValue; 12] = [
         QuickValue::Speed2,
         QuickValue::Speed3,
         QuickValue::Speed4,
         QuickValue::Speed6,
         QuickValue::On,
         QuickValue::Off,
+        QuickValue::Min3,
+        QuickValue::Min15,
+        QuickValue::Min30,
+        QuickValue::Hr1,
+        QuickValue::Hr2,
+        QuickValue::Hr8,
     ];
 
     pub fn index(self) -> usize {
@@ -203,6 +221,25 @@ impl QuickValue {
             QuickValue::Speed6 => "6X",
             QuickValue::On => "ON",
             QuickValue::Off => "OFF",
+            QuickValue::Min3 => "3 MIN",
+            QuickValue::Min15 => "15 MIN",
+            QuickValue::Min30 => "30 MIN",
+            QuickValue::Hr1 => "1 H",
+            QuickValue::Hr2 => "2 H",
+            QuickValue::Hr8 => "8 H",
+        }
+    }
+
+    /// A sleep duration in minutes, as Sleep's row shows it.
+    pub fn sleep(minutes: u16) -> Option<QuickValue> {
+        match minutes {
+            3 => Some(QuickValue::Min3),
+            15 => Some(QuickValue::Min15),
+            30 => Some(QuickValue::Min30),
+            60 => Some(QuickValue::Hr1),
+            120 => Some(QuickValue::Hr2),
+            480 => Some(QuickValue::Hr8),
+            _ => None,
         }
     }
 

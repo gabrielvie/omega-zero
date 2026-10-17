@@ -3,7 +3,7 @@ use crate::common;
 use common::tmp_root;
 use omega_store::{
     atomic_write, read_app_state, write_app_state, AppState, BackdropStyle, Font, Platform,
-    BACKDROP_COLOURS, FF_SPEEDS, FF_SPEED_DEFAULT,
+    BACKDROP_COLOURS, FF_SPEEDS, FF_SPEED_DEFAULT, SLEEP_MINUTES, SLEEP_MINUTES_DEFAULT,
 };
 use tempfile::tempdir;
 
@@ -187,6 +187,8 @@ fn a_card_from_before_the_settings_keeps_all_its_values() {
         AppState {
             cart: Some("Emerald".into()),
             cart_platform: None,
+            shelf_cart: None,
+            shelf_platform: None,
             brightness: 3,
             blue_light: 1,
             volume: 40,
@@ -208,6 +210,7 @@ fn a_card_from_before_the_settings_keeps_all_its_values() {
             backdrop_moving: true,
             backdrop_colour: 0,
             font: Font::Bold,
+            sleep_minutes: SLEEP_MINUTES_DEFAULT,
         }
     );
 }
@@ -665,4 +668,77 @@ fn a_font_the_reader_does_not_know_or_never_saw_is_bold() {
         );
     }
     assert_eq!(AppState::default().font, Font::Bold);
+}
+
+#[test]
+fn the_sleep_duration_is_thirty_minutes_by_default_and_round_trips_each_choice() {
+    assert_eq!(AppState::default().sleep_minutes, 30);
+    assert_eq!(SLEEP_MINUTES, [3, 15, 30, 60, 120, 480]);
+    for minutes in SLEEP_MINUTES {
+        let d = tmp_root();
+        let s = AppState {
+            clock_set: true,
+            sleep_minutes: minutes,
+            ..AppState::default()
+        };
+        write_app_state(d.path(), &s).unwrap();
+        assert_eq!(read_app_state(d.path()), s);
+        let text = std::fs::read_to_string(d.path().join("Config/omega-zero.state")).unwrap();
+        let want = format!("sleep_minutes={minutes}");
+        assert!(text.lines().any(|l| l == want), "no {want} in {text:?}");
+    }
+    let d = tmp_root();
+    let known = "cart=Emerald\nbrightness=3\nblue_light=1\nvolume=40\nmuted=0\nclock_set=1\nutc_offset_min=0\n";
+    for (extra, want) in [
+        ("", SLEEP_MINUTES_DEFAULT),
+        ("sleep_minutes=480\n", 480),
+        ("sleep_minutes=3\n", 3),
+        ("sleep_minutes=7\n", SLEEP_MINUTES_DEFAULT),
+        ("sleep_minutes=\n", SLEEP_MINUTES_DEFAULT),
+        ("sleep_minutes=long\n", SLEEP_MINUTES_DEFAULT),
+    ] {
+        std::fs::write(
+            d.path().join("Config/omega-zero.state"),
+            format!("{known}{extra}"),
+        )
+        .unwrap();
+        let s = read_app_state(d.path());
+        assert_eq!(s.sleep_minutes, want, "{extra:?}");
+        assert_eq!(
+            s.cart.as_deref(),
+            Some("Emerald"),
+            "{extra:?} lost the card"
+        );
+    }
+}
+
+#[test]
+fn the_shelf_cart_round_trips_with_its_system_and_is_none_when_absent() {
+    let d = tmp_root();
+    let s = AppState {
+        clock_set: true,
+        shelf_cart: Some("Mario Kart - Super Circuit (USA) (Wii U Virtual Console)".into()),
+        shelf_platform: Some(Platform::Snes),
+        ..AppState::default()
+    };
+    write_app_state(d.path(), &s).unwrap();
+    assert_eq!(read_app_state(d.path()), s);
+    let text = std::fs::read_to_string(d.path().join("Config/omega-zero.state")).unwrap();
+    assert!(text.lines().any(|l| l == "shelf_platform=snes"), "{text:?}");
+    let known =
+        "cart=\nbrightness=3\nblue_light=1\nvolume=40\nmuted=0\nclock_set=1\nutc_offset_min=0\n";
+    for extra in [
+        "",
+        "shelf_cart=\nshelf_platform=gba\n",
+        "shelf_platform=gba\n",
+    ] {
+        std::fs::write(
+            d.path().join("Config/omega-zero.state"),
+            format!("{known}{extra}"),
+        )
+        .unwrap();
+        let s = read_app_state(d.path());
+        assert_eq!((s.shelf_cart, s.shelf_platform), (None, None), "{extra:?}");
+        assert!(s.clock_set, "{extra:?} lost the rest of the card");
+    }
 }

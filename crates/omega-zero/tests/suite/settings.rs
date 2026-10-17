@@ -142,6 +142,7 @@ fn up_and_down_move_the_bar_and_wrap_at_the_ends() {
         SettingsRow::Rumble,
         SettingsRow::Labels,
         SettingsRow::DateTime,
+        SettingsRow::Sleep,
         SettingsRow::Network,
         SettingsRow::Bluetooth,
         SettingsRow::Background,
@@ -545,7 +546,12 @@ fn every_row_is_drawn_in_its_panels_well() {
         );
         let [wx, wy, ww, wh] = faces.wells[row.group().index()];
         assert!(
-            rect[1] >= wy && rect[1] + ROW_H <= wy + wh && rect[0] + 1 == wx && rect[2] == ww + 2,
+            // a full GENERAL's last row lays its clear bottom edge on the well's frame, as
+            // flow.html lays it, a pixel in as it is at the sides
+            rect[1] >= wy
+                && rect[1] + ROW_H <= wy + wh + 1
+                && rect[0] + 1 == wx
+                && rect[2] == ww + 2,
             "{row:?} is not in its well"
         );
     }
@@ -588,6 +594,7 @@ fn the_rows_say_what_is_set_in_flows_capitals() {
             text("ON"),
             None,
             clock_text,
+            text("30 MIN"),
             text("OFF"),
             text("OFF"),
             None,
@@ -676,6 +683,8 @@ fn without_a_radio_network_is_not_listed_drawn_or_stepped_onto() {
     }
     assert_eq!(a.settings_row(), Some(SettingsRow::DateTime));
     press(&mut a, Btn::Down);
+    assert_eq!(a.settings_row(), Some(SettingsRow::Sleep));
+    press(&mut a, Btn::Down);
     assert_eq!(
         a.settings_row(),
         Some(SettingsRow::Bluetooth),
@@ -683,10 +692,10 @@ fn without_a_radio_network_is_not_listed_drawn_or_stepped_onto() {
     );
     let out = frame(&a);
     assert!(!drawn(&out, 200 + SettingsRow::Network.index()));
-    // Bluetooth and the rows after it close up under Date & Time; the panels stay where they were
+    // Bluetooth and the rows after it close up under Sleep; the panels stay where they were
     let date = placed(&out, 200 + SettingsRow::DateTime.index()).unwrap();
     let bluetooth = placed(&out, 200 + SettingsRow::Bluetooth.index()).unwrap();
-    assert_eq!(bluetooth[1], date[1] + (2 * ROW_H) as f32);
+    assert_eq!(bluetooth[1], date[1] + (4 * ROW_H) as f32);
     assert_eq!(placed(&out, 100), Some(at_2x(modal_rect())));
     assert_eq!(placed(&out, 111), Some(at_2x(faces.titles[1].at)));
 }
@@ -701,4 +710,57 @@ fn nothing_is_drawn_before_its_faces_are_made() {
         !out.iter().any(|d| matches!(d, Draw::Tex { .. })),
         "Settings drew faces it was never given"
     );
+}
+
+#[test]
+fn sleep_steps_through_its_durations_in_general_and_saves_each_one() {
+    let (d, mut a, _) = on_carousel();
+    assert_eq!(SettingsRow::Sleep.label(), "Sleep");
+    assert_eq!(SettingsRow::Sleep.group(), SettingsGroup::General);
+    assert!(SettingsRow::Sleep.carets() && !SettingsRow::Sleep.opens());
+    open_at(&mut a, SettingsRow::Sleep);
+    assert_eq!(
+        a.settings_text(SettingsRow::Sleep).as_deref(),
+        Some("30 MIN"),
+        "the row did not open on the default"
+    );
+    for (btn, minutes, shown) in [
+        (Btn::Right, 60, "1 H"),
+        (Btn::Right, 120, "2 H"),
+        (Btn::Right, 480, "8 H"),
+        (Btn::Right, 480, "8 H"),
+        (Btn::Left, 120, "2 H"),
+        (Btn::Left, 60, "1 H"),
+        (Btn::Left, 30, "30 MIN"),
+        (Btn::Left, 15, "15 MIN"),
+        (Btn::Left, 3, "3 MIN"),
+        (Btn::Left, 3, "3 MIN"),
+    ] {
+        press(&mut a, btn);
+        assert_eq!(
+            read_app_state(d.path()).sleep_minutes,
+            minutes,
+            "{btn:?} to {shown}"
+        );
+        assert_eq!(a.settings_text(SettingsRow::Sleep).as_deref(), Some(shown));
+        assert_eq!(a.settings_row(), Some(SettingsRow::Sleep), "the bar moved");
+    }
+    press(&mut a, Btn::A);
+    assert_eq!(
+        a.settings_row(),
+        Some(SettingsRow::Sleep),
+        "A opened a screen from a row that steps"
+    );
+}
+
+#[test]
+fn sleep_stands_under_date_and_time() {
+    let at = |r| SettingsRow::ALL.iter().position(|x| *x == r).unwrap();
+    assert_eq!(at(SettingsRow::Sleep), at(SettingsRow::DateTime) + 1);
+}
+
+#[test]
+fn a_sleep_duration_the_card_names_wrongly_starts_from_the_default() {
+    assert_eq!(omega_zero::sleep::sleep_step(7, true), 60);
+    assert_eq!(omega_zero::sleep::sleep_step(7, false), 15);
 }

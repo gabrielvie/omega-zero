@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use omega_input::{Btn, InputSource, Millis, RawEvent};
+use omega_power::LidSensor;
 
 use super::evdev::{
     decode, device_name, pick_devices, to_raw, Ev, Hat, EVENT_BYTES, EV_ABS, EV_KEY, EV_SYN,
@@ -14,12 +15,14 @@ use super::trace;
 const DEV: &str = "/dev/input";
 const SYS: &str = "/sys/class/input";
 const PSY: &str = "/sys/class/power_supply";
+const GPIO_TABLE: &str = "/sys/kernel/debug/gpio";
 
 const LID_POLL_MS: Millis = 150;
 
 pub struct DeviceInput {
     pending: Arc<Mutex<Vec<RawEvent>>>,
-    hall: Option<PathBuf>,
+    /// The lid, read through the sensor check that catches a stale "shut" after a wake.
+    lid: Option<LidSensor>,
     lid_shut: Option<bool>,
     next_lid_poll: Millis,
 }
@@ -55,7 +58,8 @@ impl DeviceInput {
         }
         DeviceInput {
             pending,
-            hall: find_hall(Path::new(PSY)),
+            lid: find_hall(Path::new(PSY))
+                .map(|hall| LidSensor::new(hall, Some(PathBuf::from(GPIO_TABLE)))),
             lid_shut: None,
             next_lid_poll: 0,
         }
@@ -171,20 +175,25 @@ impl Trace {
 }
 
 impl DeviceInput {
+    /// Whether the lid is shut.
     fn read_lid(&self) -> Option<bool> {
-        let raw = std::fs::read_to_string(self.hall.as_ref()?).ok()?;
-        match raw.trim() {
-            "0" => Some(true),
-            "1" => Some(false),
-            _ => None,
-        }
+        self.lid.as_ref()?.open().map(|open| !open)
+    }
+
+    /// After a hardware wake: drops any POWER press or release queued from the wake (the press
+    /// that woke the handheld must not count again), and reads the lid on the next poll instead
+    /// of waiting out the poll interval.
+    pub fn after_wake(&mut self) {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        pending.retain(|e| !matches!(e, RawEvent::Down(Btn::Power) | RawEvent::Up(Btn::Power)));
+        self.next_lid_poll = 0;
     }
 }
 
 impl InputSource for DeviceInput {
     fn poll(&mut self, now: Millis) -> Vec<RawEvent> {
         let mut out = std::mem::take(&mut *self.pending.lock().unwrap_or_else(|e| e.into_inner()));
-        if self.hall.is_some() && now >= self.next_lid_poll {
+        if self.lid.is_some() && now >= self.next_lid_poll {
             self.next_lid_poll = now + LID_POLL_MS;
             if let Some(shut) = self.read_lid() {
                 if self.lid_shut != Some(shut) {
